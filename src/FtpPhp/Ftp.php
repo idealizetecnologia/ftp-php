@@ -1,4 +1,6 @@
 <?php
+namespace FtpPhp;
+
 
 /**
  * FTP - access to an FTP server.
@@ -9,7 +11,7 @@
  * @link       http://phpfashion.com/
  * @version    1.2
  *
- * @method bool alloc(int $filesize, string & $result) - Allocates space for a file to be uploaded
+ * @method bool alloc(int $filesize, string $result) - Allocates space for a file to be uploaded
  * @method bool append(string $remote_file, string $local_file, int $mode = 2) - Append content of a file a another file on the FTP server
  * @method bool cdUp() - Changes to the parent directory
  * @method void chDir(string $directory) - Changes the current directory on a FTP server
@@ -46,8 +48,9 @@
  * @method void sslConnect(string $host, int $port = 21, int $timeout = 90) - Opens an Secure SSL-FTP connection
  * @method string|false sysType() - Returns the system type identifier of the remote FTP server
  */
-class Ftp
-{
+
+class Ftp{
+	
 	/**#@+ FTP constant alias */
 	const ASCII = FTP_ASCII;
 	const TEXT = FTP_TEXT;
@@ -80,30 +83,61 @@ class Ftp
 
 	/** @var string */
 	private $errorMsg;
+	
+	private $configs = [
+	      'scheme' => 'ftp',
+	      'host' => null,
+	      'password' => null,
+	      'username' => null,
+	      'port' => 21,
+	      'path' => null,
+	      'passiveMode' => true
+	];
 
-
+	
+	
 	/**
-	 * @param  string  URL ftp://...
-	 * @param  bool
+	 * @param array $config
 	 */
-	public function __construct($url = NULL, $passiveMode = TRUE)
-	{
+	public function __construct(array $config = array()) {
+	    
+	    $this->configs = array_merge($this->configs, $config);
+	    
 		if (!extension_loaded('ftp')) {
-			throw new Exception('PHP extension FTP is not loaded.');
+			throw new \Exception('PHP extension FTP is not loaded.');
 		}
-		if ($url) {
-			$parts = parse_url($url);
-			if (!isset($parts['scheme']) || !in_array($parts['scheme'], array('ftp', 'ftps', 'sftp'))) {
-				throw new InvalidArgumentException('Invalid URL.');
-			}
-			$func = $parts['scheme'] === 'ftp' ? 'connect' : 'ssl_connect';
-			$this->$func($parts['host'], empty($parts['port']) ? NULL : (int) $parts['port']);
-			$this->login(urldecode($parts['user']), urldecode($parts['pass']));
-			$this->pasv((bool) $passiveMode);
-			if (isset($parts['path'])) {
-				$this->chdir($parts['path']);
-			}
-		}
+	}
+	
+	
+	/**
+	 * @throws \InvalidArgumentException
+	 * @throws FtpException
+	 * @return resource (FTP Buffer)
+	 */
+	public function connect(){
+	    
+	    if ($this->configs['host']) {
+	        
+	        if (!isset($this->configs['scheme']) || !in_array($this->configs['scheme'], array('ftp', 'ftps', 'sftp'))) {
+	            throw new \InvalidArgumentException('Invalid URL.');
+	        }
+	        
+	        if($this->configs['scheme'] === 'ftp'){
+	            $this->resource = \ftp_connect($this->configs['host'], $this->configs['port']);
+	        }else{
+	            $this->resource = \ftp_ssl_connect($this->configs['host'], $this->configs['port']);
+	        }
+	        
+	        $this->login(urldecode($this->configs['username']), urldecode($this->configs['password']));
+	        $this->pasv((bool) $this->configs['passiveMode']);
+	        
+	        if ($this->configs['path']) {
+	            $this->chdir($this->configs['path']);
+	        }
+	        
+            return $this->resource;
+	        
+	    }
 	}
 
 
@@ -115,26 +149,21 @@ class Ftp
 	 * @throws Exception
 	 * @throws FtpException
 	 */
-	public function __call($name, $args)
-	{
-		$name = strtolower($name);
+	public function __call($name, $args) {
+
+	    $name = strtolower($name);
 		$silent = strncmp($name, 'try', 3) === 0;
 		$func = $silent ? substr($name, 3) : $name;
 		$func = 'ftp_' . (isset(self::$aliases[$func]) ? self::$aliases[$func] : $func);
 
 		if (!function_exists($func)) {
-			throw new Exception("Call to undefined method Ftp::$name().");
+			throw new \Exception("Call to undefined method Ftp::$name().");
 		}
 
 		$this->errorMsg = NULL;
 		set_error_handler(array($this, '_errorHandler'));
-
-		if ($func === 'ftp_connect' || $func === 'ftp_ssl_connect') {
-			$this->state = array($name => $args);
-			$this->resource = call_user_func_array($func, $args);
-			$res = NULL;
-
-		} elseif (!is_resource($this->resource)) {
+		
+		if (!is_resource($this->resource)) {
 			restore_error_handler();
 			throw new FtpException("Not connected to FTP server. Call connect() or ssl_connect() first.");
 
@@ -171,8 +200,7 @@ class Ftp
 	/**
 	 * Internal error handler. Do not call directly.
 	 */
-	public function _errorHandler($code, $message)
-	{
+	public function _errorHandler($code, $message) {
 		$this->errorMsg = $message;
 	}
 
@@ -181,8 +209,7 @@ class Ftp
 	 * Reconnects to FTP server.
 	 * @return void
 	 */
-	public function reconnect()
-	{
+	public function reconnect() {
 		@ftp_close($this->resource); // intentionally @
 		foreach ($this->state as $name => $args) {
 			call_user_func_array(array($this, $name), $args);
@@ -195,8 +222,7 @@ class Ftp
 	 * @param  string
 	 * @return bool
 	 */
-	public function fileExists($file)
-	{
+	public function fileExists($file) {
 		return (bool) $this->nlist($file);
 	}
 
@@ -206,15 +232,13 @@ class Ftp
 	 * @param  string
 	 * @return bool
 	 */
-	public function isDir($dir)
-	{
-		$current = $this->pwd();
+	public function isDir($dir) {
+	    $this->chdir('/');
 		try {
-			$this->chdir($dir);
+			return $this->chdir($dir);
 		} catch (FtpException $e) {
+		    return null;
 		}
-		$this->chdir($current);
-		return empty($e);
 	}
 
 
@@ -223,21 +247,30 @@ class Ftp
 	 * @param  string
 	 * @return void
 	 */
-	public function mkDirRecursive($dir)
-	{
-		$parts = explode('/', $dir);
-		$path = '';
-		while (!empty($parts)) {
-			$path .= array_shift($parts);
-			try {
-				if ($path !== '') $this->mkdir($path);
-			} catch (FtpException $e) {
-				if (!$this->isDir($path)) {
-					throw new FtpException("Cannot create directory '$path'.");
-				}
-			}
-			$path .= '/';
-		}
+	public function mkDirRecursive($dir){
+	    if (!$this->isDir($dir)) {
+    		$parts = explode('/', $dir);
+    		
+    		$path = '';
+    		
+    		while (!empty($parts)) {
+    			$path .= array_shift($parts);
+    			try {
+    				if ($path !== '' && !$this->isDir($path)){
+        				$this->mkdir($path);
+    				}
+    			} catch (FtpException $e) {
+    				if (!$this->isDir($path)) {
+    					throw new FtpException("Cannot create directory '$path'.");
+    				}
+    			}
+    			$path .= '/';
+    		}
+	    }
+	    
+	    //reset current path
+	    $this->chdir('/');
+	    
 	}
 
 
@@ -246,8 +279,7 @@ class Ftp
 	 * @param  string
 	 * @return void
 	 */
-	public function deleteRecursive($path)
-	{
+	public function deleteRecursive($path)	{
 		if (!$this->tryDelete($path)) {
 			foreach ((array) $this->nlist($path) as $file) {
 				if ($file !== '.' && $file !== '..') {
@@ -257,11 +289,4 @@ class Ftp
 			$this->rmdir($path);
 		}
 	}
-
-}
-
-
-
-class FtpException extends Exception
-{
 }
